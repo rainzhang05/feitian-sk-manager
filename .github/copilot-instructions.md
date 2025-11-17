@@ -144,6 +144,62 @@ Deliverables:
 
 ---
 
+### Phase 1.5 — Dual-Transport Layer (WebUSB + WebHID)
+
+Goal: Support both WebUSB and WebHID, so all Feitian devices—whether HID-based or vendor-USB—are compatible.
+
+Deliverables
+	1.	Transport Abstraction
+	•	Create a unified interface:
+interface Transport {
+  connect(): Promise<void>;
+  disconnect(): Promise<void>;
+  send(data: Uint8Array): Promise<void>;
+  onReceive(cb: (data: Uint8Array) => void): void;
+  type: "webusb" | "webhid";
+}
+2.	WebUSB Transport (Existing)
+	•	Move existing implementation into:
+src/services/transport/usbTransport.ts
+3.	WebHID Transport (New)
+	•	Implement HID-based communication with:
+	•	requestDevice()
+	•	open()
+	•	receive via input reports
+	•	send via output reports or feature reports
+	•	listener cleanup
+    •	File: src/services/transport/hidTransport.ts
+4. Unified Manager
+•	File:
+src/services/transport/index.ts
+•	Logic:
+	•	Try WebUSB first
+	•	Fallback to WebHID
+	•	Throw error if neither available
+	•	Return a concrete Transport instance
+
+5.	FIDO2 UI Integration
+•	Update FIDO2Page to:
+•	Use unified transport
+•	Display “Connected via WebUSB” or “Connected via WebHID”
+•	Automatically route data through WASM
+6.	Receive Loop Refactor
+•	Move the loop into the unified transport
+•	Must work identically for USB and HID
+
+Acceptance Criteria
+	•	Connect button selects either WebUSB or WebHID device.
+	•	Feitian keys (HID) appear and can be selected.
+	•	USB-only devices also work.
+	•	Unified API provides:
+	•	connect(), disconnect()
+	•	send(data)
+	•	onReceive(callback)
+	•	UI reflects correct transport type.
+	•	WASM receives all data from either transport.
+
+---
+
 ### Phase 2 — WASM CTAPHID Core
 AI Agent tasks:
 - Implement CTAPHID INIT
