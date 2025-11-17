@@ -3,8 +3,9 @@ import FIDO2Page from '@pages/FIDO2Page.tsx'
 import PIVPage from '@pages/PIVPage.tsx'
 import OTPPage from '@pages/OTPPage.tsx'
 import InterfacesPage from '@pages/InterfacesPage.tsx'
+import DiagnosticsPage from '@pages/DiagnosticsPage.tsx'
 
-type PageType = 'fido2' | 'piv' | 'otp' | 'interfaces';
+type PageType = 'fido2' | 'piv' | 'otp' | 'interfaces' | 'diagnostics';
 
 function App() {
   const [currentPage, setCurrentPage] = useState<PageType>('fido2')
@@ -19,6 +20,8 @@ function App() {
         return <OTPPage />
       case 'interfaces':
         return <InterfacesPage />
+      case 'diagnostics':
+        return <DiagnosticsPage />
       default:
         return <FIDO2Page />
     }
@@ -79,6 +82,14 @@ function App() {
           }}
         >
           Interfaces
+        </button>
+        <button
+          onClick={() => setCurrentPage('diagnostics')}
+          style={{
+            fontWeight: currentPage === 'diagnostics' ? 600 : 400,
+          }}
+        >
+          Diagnostics
         </button>
       </nav>
 

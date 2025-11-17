@@ -9,6 +9,15 @@ interface USBDevice {
   readonly productName?: string;
   readonly manufacturerName?: string;
   readonly serialNumber?: string;
+  readonly deviceClass: number;
+  readonly deviceSubclass: number;
+  readonly deviceProtocol: number;
+  readonly deviceVersionMajor: number;
+  readonly deviceVersionMinor: number;
+  readonly deviceVersionSubminor: number;
+  readonly usbVersionMajor: number;
+  readonly usbVersionMinor: number;
+  readonly usbVersionSubminor: number;
   readonly configuration?: USBConfiguration;
   readonly configurations: USBConfiguration[];
   readonly opened: boolean;

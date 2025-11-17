@@ -49,7 +49,11 @@ let outEndpoint: number | null = null;
 let receiveLoopRunning = false;
 
 // Constants
-const FEITIAN_VENDOR_ID = 0x096E;
+// Known Feitian vendor IDs (add more as discovered)
+const FEITIAN_VENDOR_IDS = [
+  0x096E,  // Primary Feitian vendor ID
+  0x311F   // Alternative Feitian vendor ID (some models)
+];
 const DEFAULT_PACKET_SIZE = 64;
 
 /**
@@ -67,8 +71,10 @@ function checkWebUSBSupport(): void {
 /**
  * Request and select a USB device
  * Opens device selection dialog filtered for Feitian devices
+ * 
+ * @param allowAnyDevice - If true, allows selecting any USB device (useful for diagnostics)
  */
-export async function selectDevice(): Promise<USBDeviceInfo | null> {
+export async function selectDevice(allowAnyDevice = false): Promise<USBDeviceInfo | null> {
   checkWebUSBSupport();
 
   if (!navigator.usb) {
@@ -76,9 +82,14 @@ export async function selectDevice(): Promise<USBDeviceInfo | null> {
   }
 
   try {
-    const device = await navigator.usb.requestDevice({
-      filters: [{ vendorId: FEITIAN_VENDOR_ID }]
-    });
+    // Create filters for all known Feitian vendor IDs
+    const filters = allowAnyDevice 
+      ? [] // No filter - show all devices
+      : FEITIAN_VENDOR_IDS.map(vendorId => ({ vendorId }));
+
+    console.log('Requesting USB device with filters:', filters);
+    
+    const device = await navigator.usb.requestDevice({ filters });
 
     currentDevice = device;
 
@@ -90,11 +101,26 @@ export async function selectDevice(): Promise<USBDeviceInfo | null> {
     };
 
     console.log('USB Device selected:', deviceInfo);
+    
+    // Warn if device is not a known Feitian device
+    if (!allowAnyDevice && !FEITIAN_VENDOR_IDS.includes(device.vendorId)) {
+      console.warn(
+        `Selected device has vendor ID 0x${device.vendorId.toString(16).toUpperCase()}, ` +
+        `which is not a known Feitian vendor ID. ` +
+        `Known IDs: ${FEITIAN_VENDOR_IDS.map(id => `0x${id.toString(16).toUpperCase()}`).join(', ')}`
+      );
+    }
+    
     return deviceInfo;
   } catch (error) {
     if (error instanceof Error) {
       if (error.name === 'NotFoundError') {
-        console.log('No device selected by user');
+        console.log('No device selected by user or no compatible devices found');
+        console.log('Troubleshooting tips:');
+        console.log('1. Make sure your device is plugged in');
+        console.log('2. Check if the device vendor ID matches:', FEITIAN_VENDOR_IDS.map(id => `0x${id.toString(16).toUpperCase()}`).join(', '));
+        console.log('3. Some Feitian devices may only expose HID/CCID interfaces, which are not WebUSB-compatible');
+        console.log('4. Try the diagnostic tool to analyze your device');
         return null;
       }
       throw new Error(`Failed to select USB device: ${error.message}`);
@@ -105,40 +131,81 @@ export async function selectDevice(): Promise<USBDeviceInfo | null> {
 
 /**
  * Detect and configure USB endpoints from device configuration
+ * Searches across all interfaces to find a vendor-specific interface with endpoints
  */
 function detectEndpoints(device: USBDevice): void {
   if (!device.configuration) {
     throw new Error('No USB configuration available');
   }
 
-  // Look for suitable endpoints in interface 0
-  const iface = device.configuration.interfaces[0];
-  if (!iface) {
-    throw new Error('No USB interfaces found for communication');
-  }
-
-  // Use the first alternate interface
-  const alternate = iface.alternates[0];
-  if (!alternate) {
-    throw new Error('No alternate interface found');
-  }
-
-  // Find IN and OUT endpoints
-  for (const endpoint of alternate.endpoints) {
-    if (endpoint.direction === 'in' && !inEndpoint) {
-      inEndpoint = endpoint.endpointNumber;
-      console.log(`IN endpoint detected: ${inEndpoint}`);
-    } else if (endpoint.direction === 'out' && !outEndpoint) {
-      outEndpoint = endpoint.endpointNumber;
-      console.log(`OUT endpoint detected: ${outEndpoint}`);
+  console.log('Scanning device interfaces for WebUSB-compatible endpoints...');
+  
+  // Try to find a vendor-specific (0xFF) interface with endpoints
+  for (const iface of device.configuration.interfaces) {
+    for (const alternate of iface.alternates) {
+      console.log(
+        `Interface ${iface.interfaceNumber}, Alternate ${alternate.alternateSetting}: ` +
+        `Class=0x${alternate.interfaceClass.toString(16).toUpperCase()}, ` +
+        `Subclass=0x${alternate.interfaceSubclass.toString(16).toUpperCase()}, ` +
+        `Protocol=0x${alternate.interfaceProtocol.toString(16).toUpperCase()}, ` +
+        `Endpoints=${alternate.endpoints.length}`
+      );
+      
+      // Check for HID or CCID interfaces (which cannot be claimed by WebUSB)
+      if (alternate.interfaceClass === 0x03) {
+        console.warn(`Interface ${iface.interfaceNumber} is HID (class 0x03) - cannot be used with WebUSB`);
+        continue;
+      }
+      if (alternate.interfaceClass === 0x0B) {
+        console.warn(`Interface ${iface.interfaceNumber} is CCID (class 0x0B) - cannot be used with WebUSB`);
+        continue;
+      }
+      
+      // Look for vendor-specific interfaces (0xFF) or other claimable interfaces
+      const isVendorSpecific = alternate.interfaceClass === 0xFF;
+      
+      // Find IN and OUT endpoints in this interface
+      let tempInEndpoint: number | null = null;
+      let tempOutEndpoint: number | null = null;
+      
+      for (const endpoint of alternate.endpoints) {
+        if (endpoint.direction === 'in' && !tempInEndpoint) {
+          tempInEndpoint = endpoint.endpointNumber;
+        } else if (endpoint.direction === 'out' && !tempOutEndpoint) {
+          tempOutEndpoint = endpoint.endpointNumber;
+        }
+      }
+      
+      // If we found both endpoints, use this interface
+      if (tempInEndpoint && tempOutEndpoint) {
+        inEndpoint = tempInEndpoint;
+        outEndpoint = tempOutEndpoint;
+        currentInterfaceNumber = iface.interfaceNumber;
+        
+        console.log(
+          `✓ Selected interface ${iface.interfaceNumber} ` +
+          `(${isVendorSpecific ? 'Vendor-Specific' : `Class 0x${alternate.interfaceClass.toString(16)}`}): ` +
+          `IN=${inEndpoint}, OUT=${outEndpoint}`
+        );
+        return;
+      }
     }
   }
 
-  if (!inEndpoint || !outEndpoint) {
-    throw new Error('No USB endpoints found for communication');
-  }
-
-  currentInterfaceNumber = iface.interfaceNumber;
+  // If we get here, no suitable interface was found
+  console.error('Failed to find suitable interface with bidirectional endpoints');
+  console.error('Device interface classes:', 
+    device.configuration.interfaces.map((iface, idx) => {
+      const alt = iface.alternates[0];
+      return `Interface ${idx}: 0x${alt?.interfaceClass.toString(16).toUpperCase() || '??'}`;
+    }).join(', ')
+  );
+  
+  throw new Error(
+    'No WebUSB-compatible interface found. ' +
+    'This device may only expose HID/CCID interfaces, which cannot be claimed by WebUSB. ' +
+    'Consider using WebHID API instead.'
+  );
 }
 
 /**

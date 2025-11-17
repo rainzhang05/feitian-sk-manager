@@ -114,8 +114,65 @@ The application includes Cross-Origin-Opener-Policy (COOP) and Cross-Origin-Embe
 - ✅ WASM module skeleton with wasm-bindgen
 - ✅ Docker deployment working
 - ✅ nginx with proper headers
+- ✅ USB diagnostics tool added
 
 **Next Steps**: Phase 1 - USB Transport Layer implementation
+
+## Troubleshooting
+
+### "No Compatible Devices Found" Error
+
+If you're unable to detect your Feitian security key, use the built-in **Diagnostics** page to identify the issue:
+
+1. Navigate to the **Diagnostics** tab in the application
+2. Click **"Run System Diagnostics"** to check your environment
+3. Click **"Detect Any Device"** to test device detection without vendor filters
+
+#### Common Causes
+
+**1. Wrong Vendor ID**
+- Feitian devices may use vendor IDs: `0x096E` or `0x311F`
+- Use the diagnostics tool to discover your device's vendor ID
+- Some models may have different vendor IDs
+
+**2. HID/CCID Interface Only**
+- Many Feitian security keys expose only HID (class `0x03`) or CCID (class `0x0B`) interfaces
+- **WebUSB cannot claim HID/CCID interfaces** - they are reserved by the operating system
+- Solution: These devices require **WebHID API** instead of WebUSB
+- Check the diagnostics tool for "Recommended Transport" guidance
+
+**3. Origin Not Secure**
+- WebUSB requires HTTPS or localhost
+- File protocol (`file://`) is not supported
+- Non-localhost HTTP is not supported
+- Check diagnostics for origin compatibility
+
+**4. Browser Not Supported**
+- Use Chrome, Edge, or Opera (Chromium-based)
+- Firefox does not support WebUSB
+- Safari does not support WebUSB
+
+#### Using the Diagnostics Tool
+
+The diagnostics page provides:
+- Environment and origin validation
+- Device interface analysis
+- WebUSB compatibility check
+- Recommended transport method (WebUSB vs WebHID)
+- Detailed device information
+
+#### WebUSB vs WebHID
+
+**WebUSB** works with:
+- Devices with vendor-specific interfaces (class `0xFF`)
+- Devices explicitly designed for WebUSB
+
+**WebHID** works with:
+- Devices with HID interfaces (class `0x03`)
+- FIDO2 authenticators
+- Most security keys
+
+**Note**: Most Feitian security keys use HID/CCID interfaces and require WebHID, not WebUSB. Future versions of this application may add WebHID support.
 
 ## License
 
