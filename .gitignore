@@ -1,1 +1,29 @@
 .idea
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+target/
+frontend/public/wasm/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
