@@ -154,12 +154,28 @@ If you're unable to detect your Feitian security key, use the built-in **Diagnos
 
 #### Using the Diagnostics Tool
 
+**In-Browser Diagnostics:**
+
 The diagnostics page provides:
 - Environment and origin validation
 - Device interface analysis
 - WebUSB compatibility check
 - Recommended transport method (WebUSB vs WebHID)
 - Detailed device information
+
+**Command-Line Diagnostics:**
+
+For detailed USB device information on your local system, run:
+
+```bash
+./scripts/usb-diagnostics.sh
+```
+
+This script works on macOS and Linux and will:
+- List all USB devices
+- Show detailed descriptors for Feitian devices
+- Display interface classes and endpoints
+- Provide next-step recommendations
 
 #### WebUSB vs WebHID
 
