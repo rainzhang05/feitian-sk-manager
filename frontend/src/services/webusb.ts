@@ -1,11 +1,38 @@
 /**
- * WebUSB Service - Placeholder for USB device communication
+ * WebUSB Service - USB device communication layer
  * 
- * This service will handle:
+ * This service handles:
  * - Device selection and pairing
  * - USB connection management
  * - Raw data transfer to/from WASM module
  */
+
+// WASM module reference - will be loaded dynamically when available
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let wasmModule: any = null;
+
+// Try to load WASM module
+async function loadWasmModule() {
+  try {
+    // Dynamic import - WASM module will be available in later phases
+    // Using Function constructor to avoid TypeScript import checking
+    const importWasm = new Function('return import("../../wasm/pkg/index.js")');
+    const module = await importWasm().catch(() => null);
+    if (module) {
+      wasmModule = module;
+      if (wasmModule.init) {
+        wasmModule.init();
+      }
+      console.log('WASM module loaded successfully');
+    }
+  } catch {
+    // WASM module not yet built - this is expected in Phase 1
+    console.log('WASM module not yet available (will be implemented in Phase 2)');
+  }
+}
+
+// Initialize WASM on module load (non-blocking)
+loadWasmModule();
 
 export interface USBDeviceInfo {
   vendorId: number;
@@ -14,69 +41,376 @@ export interface USBDeviceInfo {
   serialNumber?: string;
 }
 
+// Module-level state
+let currentDevice: USBDevice | null = null;
+let currentInterfaceNumber: number | null = null;
+let inEndpoint: number | null = null;
+let outEndpoint: number | null = null;
+let receiveLoopRunning = false;
+
+// Constants
+const FEITIAN_VENDOR_ID = 0x096E;
+const DEFAULT_PACKET_SIZE = 64;
+
+/**
+ * Check if WebUSB is supported in the current browser
+ */
+function checkWebUSBSupport(): void {
+  if (!navigator.usb) {
+    throw new Error(
+      'WebUSB is not supported in this browser. ' +
+      'Please use a Chromium-based browser (Chrome, Edge, Opera) with HTTPS.'
+    );
+  }
+}
+
 /**
  * Request and select a USB device
- * TODO: Implement navigator.usb.requestDevice() with Feitian vendor filters
+ * Opens device selection dialog filtered for Feitian devices
  */
 export async function selectDevice(): Promise<USBDeviceInfo | null> {
-  // TODO: Implement device selection
-  console.log('TODO: selectDevice() - Request USB device from user');
-  return null;
+  checkWebUSBSupport();
+
+  if (!navigator.usb) {
+    throw new Error('WebUSB not available');
+  }
+
+  try {
+    const device = await navigator.usb.requestDevice({
+      filters: [{ vendorId: FEITIAN_VENDOR_ID }]
+    });
+
+    currentDevice = device;
+
+    const deviceInfo: USBDeviceInfo = {
+      vendorId: device.vendorId,
+      productId: device.productId,
+      productName: device.productName,
+      serialNumber: device.serialNumber
+    };
+
+    console.log('USB Device selected:', deviceInfo);
+    return deviceInfo;
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.name === 'NotFoundError') {
+        console.log('No device selected by user');
+        return null;
+      }
+      throw new Error(`Failed to select USB device: ${error.message}`);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Detect and configure USB endpoints from device configuration
+ */
+function detectEndpoints(device: USBDevice): void {
+  if (!device.configuration) {
+    throw new Error('No USB configuration available');
+  }
+
+  // Look for suitable endpoints in interface 0
+  const iface = device.configuration.interfaces[0];
+  if (!iface) {
+    throw new Error('No USB interfaces found for communication');
+  }
+
+  // Use the first alternate interface
+  const alternate = iface.alternates[0];
+  if (!alternate) {
+    throw new Error('No alternate interface found');
+  }
+
+  // Find IN and OUT endpoints
+  for (const endpoint of alternate.endpoints) {
+    if (endpoint.direction === 'in' && !inEndpoint) {
+      inEndpoint = endpoint.endpointNumber;
+      console.log(`IN endpoint detected: ${inEndpoint}`);
+    } else if (endpoint.direction === 'out' && !outEndpoint) {
+      outEndpoint = endpoint.endpointNumber;
+      console.log(`OUT endpoint detected: ${outEndpoint}`);
+    }
+  }
+
+  if (!inEndpoint || !outEndpoint) {
+    throw new Error('No USB endpoints found for communication');
+  }
+
+  currentInterfaceNumber = iface.interfaceNumber;
 }
 
 /**
  * Open and claim interface on a USB device
- * TODO: Implement device.open(), device.selectConfiguration(), device.claimInterface()
  */
-export async function openDevice(device: USBDeviceInfo): Promise<boolean> {
-  // TODO: Implement device opening
-  console.log('TODO: openDevice() - Open and claim USB interface', device);
-  return false;
+export async function openDevice(): Promise<boolean> {
+  if (!currentDevice) {
+    throw new Error('No device selected. Call selectDevice() first.');
+  }
+
+  try {
+    // Open the device
+    if (!currentDevice.opened) {
+      await currentDevice.open();
+      console.log('USB Device opened');
+    } else {
+      console.warn('Device already opened');
+    }
+
+    // Select configuration (use existing or default to 1)
+    const configValue = currentDevice.configuration?.configurationValue || 1;
+    await currentDevice.selectConfiguration(configValue);
+    console.log(`Configuration ${configValue} selected`);
+
+    // Detect endpoints before claiming interface
+    detectEndpoints(currentDevice);
+
+    // Claim interface 0 (typical for CCID/HID devices)
+    if (currentInterfaceNumber !== null) {
+      await currentDevice.claimInterface(currentInterfaceNumber);
+      console.log(`Interface ${currentInterfaceNumber} claimed`);
+    }
+
+    // Start the USB receive loop
+    startReceiveLoop();
+
+    return true;
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.name === 'InvalidStateError') {
+        throw new Error('Device already in use or invalid state');
+      } else if (error.name === 'SecurityError') {
+        throw new Error('Permission denied to access USB device');
+      } else if (error.name === 'NotFoundError') {
+        throw new Error('USB device not found or disconnected');
+      }
+      throw new Error(`Failed to open USB device: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 /**
  * Close and release USB device
- * TODO: Implement device.releaseInterface(), device.close()
  */
 export async function closeDevice(): Promise<void> {
-  // TODO: Implement device closing
-  console.log('TODO: closeDevice() - Release and close USB device');
+  // Stop receive loop
+  receiveLoopRunning = false;
+
+  if (!currentDevice) {
+    console.log('No device to close');
+    return;
+  }
+
+  try {
+    // Release interface if claimed
+    if (currentInterfaceNumber !== null) {
+      await currentDevice.releaseInterface(currentInterfaceNumber);
+      console.log(`Interface ${currentInterfaceNumber} released`);
+    }
+
+    // Close device
+    await currentDevice.close();
+    console.log('USB Device closed');
+
+    // Reset state
+    currentDevice = null;
+    currentInterfaceNumber = null;
+    inEndpoint = null;
+    outEndpoint = null;
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`Failed to close USB device: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 /**
  * Send raw data to USB device
- * TODO: Implement device.transferOut() for bulk endpoint
  */
-export async function sendData(data: Uint8Array): Promise<boolean> {
-  // TODO: Implement data sending
-  console.log('TODO: sendData() - Send data to USB device', data);
-  return false;
+export async function send(data: Uint8Array): Promise<void> {
+  if (!currentDevice) {
+    throw new Error('No device connected');
+  }
+
+  if (outEndpoint === null) {
+    throw new Error('OUT endpoint not configured');
+  }
+
+  try {
+    const result = await currentDevice.transferOut(outEndpoint, data as BufferSource);
+    
+    if (result.status !== 'ok') {
+      throw new Error(`Transfer failed with status: ${result.status}`);
+    }
+
+    console.log(`Sent ${data.length} bytes to endpoint ${outEndpoint}`);
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`Failed to send data: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 /**
  * Receive raw data from USB device
- * TODO: Implement device.transferIn() for bulk endpoint
  */
-export async function receiveData(): Promise<Uint8Array | null> {
-  // TODO: Implement data receiving
-  console.log('TODO: receiveData() - Receive data from USB device');
-  return null;
+export async function receive(): Promise<Uint8Array> {
+  if (!currentDevice) {
+    throw new Error('No device connected');
+  }
+
+  if (inEndpoint === null) {
+    throw new Error('IN endpoint not configured');
+  }
+
+  try {
+    const result = await currentDevice.transferIn(inEndpoint, DEFAULT_PACKET_SIZE);
+    
+    if (result.status !== 'ok') {
+      throw new Error(`Transfer failed with status: ${result.status}`);
+    }
+
+    if (!result.data) {
+      throw new Error('No data received');
+    }
+
+    const data = new Uint8Array(result.data.buffer);
+    console.log(`Received ${data.length} bytes from endpoint ${inEndpoint}`);
+    
+    return data;
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`Failed to receive data: ${error.message}`);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Continuous USB receive loop
+ * Forwards data to WASM module for protocol handling
+ */
+async function usbReceiveLoop(): Promise<void> {
+  while (receiveLoopRunning && currentDevice) {
+    try {
+      const data = await receive();
+      
+      // Forward to WASM if available
+      if (wasmModule && wasmModule.on_usb_data) {
+        try {
+          const response = wasmModule.on_usb_data(data);
+          
+          // If WASM returns data, send it back via USB
+          if (response && response.length > 0) {
+            await send(response);
+          }
+        } catch (wasmError) {
+          console.error('WASM processing error:', wasmError);
+        }
+      } else {
+        console.log('Received USB data (WASM not available):', data);
+      }
+    } catch (error) {
+      // Only log errors that aren't due to loop stopping
+      if (receiveLoopRunning) {
+        console.error('USB receive error:', error);
+        // Small delay before retry to avoid tight error loop
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+  }
+  console.log('USB receive loop stopped');
+}
+
+/**
+ * Start the USB receive loop
+ */
+function startReceiveLoop(): void {
+  if (receiveLoopRunning) {
+    console.warn('Receive loop already running');
+    return;
+  }
+
+  receiveLoopRunning = true;
+  usbReceiveLoop().catch(error => {
+    console.error('Fatal error in USB receive loop:', error);
+    receiveLoopRunning = false;
+  });
+  console.log('USB receive loop started');
 }
 
 /**
  * Setup USB device connect event listener
- * TODO: Implement navigator.usb.addEventListener('connect', ...)
  */
-export function onDeviceConnect(callback: (device: USBDeviceInfo) => void): void {
-  // TODO: Implement connect event listener
-  console.log('TODO: onDeviceConnect() - Setup connect listener', callback);
+export function onConnect(callback: (device: USBDeviceInfo) => void): void {
+  checkWebUSBSupport();
+
+  if (!navigator.usb) {
+    return;
+  }
+
+  navigator.usb.addEventListener('connect', (event: USBConnectionEvent) => {
+    const device = event.device;
+    const deviceInfo: USBDeviceInfo = {
+      vendorId: device.vendorId,
+      productId: device.productId,
+      productName: device.productName,
+      serialNumber: device.serialNumber
+    };
+    console.log('USB device connected:', deviceInfo);
+    callback(deviceInfo);
+  });
 }
 
 /**
  * Setup USB device disconnect event listener
- * TODO: Implement navigator.usb.addEventListener('disconnect', ...)
  */
-export function onDeviceDisconnect(callback: () => void): void {
-  // TODO: Implement disconnect event listener
-  console.log('TODO: onDeviceDisconnect() - Setup disconnect listener', callback);
+export function onDisconnect(callback: () => void): void {
+  checkWebUSBSupport();
+
+  if (!navigator.usb) {
+    return;
+  }
+
+  navigator.usb.addEventListener('disconnect', (event: USBConnectionEvent) => {
+    console.log('USB device disconnected:', event.device.productName);
+    
+    // If the disconnected device is our current device, clean up
+    if (currentDevice && event.device === currentDevice) {
+      receiveLoopRunning = false;
+      currentDevice = null;
+      currentInterfaceNumber = null;
+      inEndpoint = null;
+      outEndpoint = null;
+    }
+    
+    callback();
+  });
+}
+
+/**
+ * Get current device connection status
+ */
+export function isConnected(): boolean {
+  return currentDevice !== null && currentDevice.opened;
+}
+
+/**
+ * Get current device info
+ */
+export function getCurrentDevice(): USBDeviceInfo | null {
+  if (!currentDevice) {
+    return null;
+  }
+
+  return {
+    vendorId: currentDevice.vendorId,
+    productId: currentDevice.productId,
+    productName: currentDevice.productName,
+    serialNumber: currentDevice.serialNumber
+  };
 }
